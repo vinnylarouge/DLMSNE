@@ -207,6 +207,7 @@ class MainWindow(QMainWindow):
     DEFAULT_ACTION_VERBS = ["Attack", "Block", "Concede", "Defend", "Evade", "Feint", "Grab", "Hold", "Inspect", "Jump"] # Extended list
     SPINNER_CHARS = ['|', '/', '-', '\\'] # Characters for activity indicator
     CONTINUE_ITERATIONS = 1000 # Number of iterations to add when continuing
+    MAX_PAYOFF_COMBINATIONS = 50000 # Limit total rows in payoff table
 
     def __init__(self):
         super().__init__()
@@ -455,7 +456,26 @@ class MainWindow(QMainWindow):
             player_info = []
             action_counts = []
             num_actions_from_spinbox = self.num_actions_spinbox.value()
+            num_players_from_spinbox = self.num_players_spinbox.value() # Get player count too
 
+            # --- Calculate total combinations early ---
+            temp_action_counts = [num_actions_from_spinbox] * num_players_from_spinbox
+            total_combinations = int(np.prod(temp_action_counts))
+
+            # --- Check against the limit ---
+            if total_combinations > self.MAX_PAYOFF_COMBINATIONS:
+                QMessageBox.warning(self, "Game Too Large",
+                                    f"The selected number of players ({num_players_from_spinbox}) and actions "
+                                    f"({num_actions_from_spinbox}) results in {total_combinations:,} possible action profiles.\n\n"
+                                    f"Displaying the payoff table for more than {self.MAX_PAYOFF_COMBINATIONS:,} profiles "
+                                    f"is currently unsupported due to performance limitations.\n\n"
+                                    f"Please reduce the number of players or actions.")
+                # Reset button states appropriately, keep definition visible
+                self.initialize_button.setEnabled(False)
+                self.game_definition_groupbox.setVisible(True)
+                return # Stop setup
+
+            # --- (Validation logic remains the same) ---
             for i, (name_edit, actions_edit) in enumerate(self.player_widgets):
                 name = name_edit.text().strip()
                 actions_str = actions_edit.text().strip()
@@ -469,57 +489,53 @@ class MainWindow(QMainWindow):
                 if len(actions) != len(set(actions)):
                     raise ValueError(f"Player {i+1} has duplicate action names.")
                 player_info.append((name, actions))
-                action_counts.append(len(actions))
+                action_counts.append(len(actions)) # Store actual counts from fields
 
+            # Re-check just in case UI fields were manually changed to differ
             if len(set(action_counts)) > 1: raise ValueError("All players must have the same number of actions.")
             if len(set(p[0] for p in player_info)) != len(player_info): raise ValueError("Player names must be unique.")
+            # --- (End Validation) ---
 
             self.current_player_info = player_info
-            self.current_action_counts = action_counts
+            self.current_action_counts = action_counts # Use validated counts
+            num_players = len(action_counts) # Use actual number of players
 
-            # Create Payoff Table
-            num_players = len(action_counts)
-            total_combinations = int(np.prod(action_counts))
+            # Re-calculate total_combinations based on potentially edited action counts (should be same due to validation)
+            total_combinations = int(np.prod(self.current_action_counts))
+            # No need to check limit again if validation passed
+
+            # Create Payoff Table (now guaranteed to be within limits)
             self.payoff_table = QTableWidget(total_combinations, num_players)
             self.payoff_table.setToolTip("Enter payoff for each player (columns) for each action profile (rows). Payoffs initialized randomly.")
-
-            # Set column headers (Player Names)
             self.payoff_table.setHorizontalHeaderLabels([p[0] for p in player_info])
-
-            # Set row headers (Action Profiles) - Use simplified index notation
-            # Pass action_counts instead of player_info
-            row_labels = self._generate_action_profile_labels_short(action_counts)
+            row_labels = self._generate_action_profile_labels_short(self.current_action_counts)
             self.payoff_table.setVerticalHeaderLabels(row_labels)
 
-            # Set validator for payoff entries (allow floats) and initialize with random ints
             validator = QDoubleValidator()
             for r in range(total_combinations):
                 for c in range(num_players):
                     random_payoff = str(random.randint(-10, 10))
                     item = QTableWidgetItem(random_payoff)
                     self.payoff_table.setItem(r, c, item)
-                    # TODO: Setting validator on item requires delegation later
 
             self.payoff_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
-            # Adjust vertical header width to fit the shorter labels
             self.payoff_table.verticalHeader().setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
 
-
-            # Create Scroll Area for the Table
             self.payoff_scroll_area = QScrollArea()
             self.payoff_scroll_area.setWidget(self.payoff_table)
-            self.payoff_scroll_area.setWidgetResizable(True) # Important! Allows table to resize within scroll area
-            self.payoff_scroll_area.setFixedHeight(400) # Set a fixed height for the scrollable area
+            self.payoff_scroll_area.setWidgetResizable(True)
+            self.payoff_scroll_area.setFixedHeight(400)
 
             self.payoff_group_layout.addWidget(QLabel("Enter/Verify Payoffs:"))
-            self.payoff_group_layout.addWidget(self.payoff_scroll_area) # Add scroll area instead of table
+            self.payoff_group_layout.addWidget(self.payoff_scroll_area)
+
 
             # Hide the definition section, enable next step
             self.game_definition_groupbox.setVisible(False)
             self.initialize_button.setEnabled(True)
             self.start_button.setEnabled(False)
             self.pause_button.setEnabled(False)
-            self.reset_button.setEnabled(False) # Should be enabled AFTER init typically
+            self.reset_button.setEnabled(False)
             self.log_message("Payoff table created and initialized. Game definition hidden.")
 
         except ValueError as e:
